@@ -30,9 +30,9 @@ pub struct Client {
     pub order_shells: BTreeMap<(i64, i64), V>,
     pub skill_shell: V,
     pub rooms: BTreeSet<(i64, i64)>,
-    pub rat: Option<Rat>,
     pub targets: BTreeSet<i64>,
     pub ballpark: Option<String>,
+    pub flight: Option<crate::space::Flight>,
     pub out: Vec<Packet>,
     pub deferred: Vec<Packet>,
     pub closed: bool,
@@ -48,9 +48,9 @@ impl Client {
             order_shells: BTreeMap::new(),
             skill_shell: V::None,
             rooms: BTreeSet::new(),
-            rat: None,
             targets: BTreeSet::new(),
             ballpark: None,
+            flight: None,
             out: vec![],
             deferred: vec![],
             closed: false,
@@ -150,6 +150,7 @@ pub struct Game {
     pub channels: BTreeMap<String, i64>,
     pub open: bool,
     pub error_id: i64,
+    pub rat: Rat,
 }
 impl Game {
     pub fn new(state: State, open: bool) -> Self {
@@ -159,6 +160,7 @@ impl Game {
             channels: BTreeMap::new(),
             open,
             error_id: 0,
+            rat: Rat::default(),
         }
     }
     pub fn handle(&mut self, id: i64, packet: Packet) {
@@ -419,6 +421,35 @@ impl Game {
             ("charmgr", "GetPublicInfo") => s.public_info(args[0].or(c.char_id())),
             ("shipSvc", "GetShipAppearance") => Ok(l![]),
             ("station", "GetOffices") => Ok(s.template("offices")),
+            ("repair", "GetDamageReport") => s.repair_report(c, &args[0]),
+            ("reprocessing", "GetOptionsForItemTypes") => {
+                s.require_station(c)?;
+                s.reprocessing_options(&args[0])
+            }
+            ("repair", "RepairShip" | "RepairModule" | "DamageModule") => {
+                let result = s.repair(
+                    c,
+                    &args[0],
+                    &args[1],
+                    method == "RepairShip",
+                    method == "DamageModule",
+                )?;
+                self.notify_wallet(c, true)?;
+                Ok(result)
+            }
+            ("reprocessing", "GetQuote") => s.reprocessing_quote(c, &args[0]),
+            ("reprocessing", "Reprocess") => {
+                let changes = s.reprocess(c, &args[0])?;
+                self.notify_inventory(
+                    c,
+                    &changes.added,
+                    &changes.changed,
+                    &changes.removed,
+                    true,
+                    true,
+                )?;
+                Ok(V::None)
+            }
             ("pager", "GetPages") => Ok(l![]),
             ("pager", "FindOwner") => {
                 let needle = args[0].text().to_lowercase();
@@ -486,15 +517,40 @@ impl Game {
             ("ship", "GetShipAccess") => Ok(c.bind("ship", d![])),
             ("entity", "GetEntityAccess") => Ok(c.bind("entity", d![])),
             ("beyonce", "MachoBindObject") => {
+                self.state.require_space(c)?;
+                if c.flight.is_none() {
+                    c.flight = Some(self.state.load_flight(c.ship())?);
+                }
+                if let Some(id) = &c.ballpark
+                    && c.objects.contains_key(id)
+                {
+                    return Ok(V::Persistent(Box::new(id.clone().into())));
+                }
                 let reference = c.bind("park", d!["ship_id"=>c.ship()]);
                 let V::Persistent(id) = &reference else {
                     unreachable!()
                 };
                 let id = id.text();
-                c.rat = Some(Rat::default());
                 c.targets.clear();
                 c.ballpark = Some(id.clone());
                 self.push_state(c, &id, true)?;
+                let (ball, slim) = crate::destiny::player_objects(&self.state, c)?;
+                for other in self.clients.values_mut().filter(|o| {
+                    o.session["solarsystemid"] == c.session["solarsystemid"]
+                        && o.session["stationid"].is_none()
+                }) {
+                    if let Some(b) = other.ballpark.as_ref().and_then(|id| other.objects.get(id)) {
+                        other.broadcast(
+                            "OnDestinyUpdate",
+                            t![crate::destiny::action(
+                                b.epoch,
+                                "AddBalls",
+                                vec![t![l![t![ball.clone(), slim.clone()]], d![]]]
+                            )],
+                            false,
+                        )?;
+                    }
+                }
                 Ok(reference)
             }
             ("chatx", _) => self.chat_service(c, method, &args),
@@ -808,6 +864,14 @@ impl Game {
     }
     pub fn disconnect(&mut self, id: i64) {
         if let Some(mut c) = self.clients.remove(&id) {
+            if let Some(f) = c.flight.as_mut() {
+                f.update();
+                if let Err(e) = self.state.save_flight(c.session["shipid"].clone(), f) {
+                    eprintln!("saving disconnected ship: {e:?}");
+                }
+                let ship = c.ship();
+                let _ = self.space_event(&mut c, "RemoveBall", vec![ship, (-1).into()], false);
+            }
             for room in c.rooms.clone() {
                 let _ = self.leave_room(&mut c, room);
             }

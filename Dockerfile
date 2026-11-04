@@ -7,7 +7,6 @@ COPY src ./src
 RUN cargo build --locked --release
 
 FROM build AS test
-COPY tests ./tests
 RUN cargo test --locked --no-run
 CMD ["cargo", "test", "--locked", "--offline", "--", "--include-ignored"]
 

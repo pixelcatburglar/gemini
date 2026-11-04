@@ -14,7 +14,16 @@ impl State {
         args: V,
         keywords: V,
     ) -> Result {
-        let spec = if kind == "service" {
+        // New native handlers must also work with an existing database whose
+        // original RPC catalog predates them. No volume reset/reseed is needed.
+        let native = if kind == "service" {
+            crate::station::signature(target, method)
+        } else {
+            V::None
+        };
+        let spec = if !native.is_none() {
+            native
+        } else if kind == "service" {
             self.data["rpc.services"][target][method].or(self.data["rpc.any"][method].clone())
         } else {
             self.data["rpc.objects"][target][method].clone()

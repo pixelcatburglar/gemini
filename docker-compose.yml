@@ -67,6 +67,9 @@ services:
       - ./db/character_location.sql.gz:/docker-entrypoint-initdb.d/053_character_location.sql.gz:ro
       - ./db/solar_systems.sql.gz:/docker-entrypoint-initdb.d/054_solar_systems.sql.gz:ro
       - ./db/system_contents.sql.gz:/docker-entrypoint-initdb.d/055_system_contents.sql.gz:ro
+      - ./db/item_damage.sql.gz:/docker-entrypoint-initdb.d/056_item_damage.sql.gz:ro
+      - ./db/reprocessing_recipes.sql.gz:/docker-entrypoint-initdb.d/057_reprocessing_recipes.sql.gz:ro
+      - ./db/ship_position.sql.gz:/docker-entrypoint-initdb.d/058_ship_position.sql.gz:ro
     healthcheck:
       test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U gemini -d gemini"]
       interval: 5s

@@ -8,7 +8,9 @@ mod objects;
 pub mod pickle;
 pub mod reference;
 mod rpc;
+pub mod space;
 pub mod state;
+mod station;
 pub mod value;
 
 use std::io::{self, Read, Write};

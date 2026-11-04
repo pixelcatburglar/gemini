@@ -49,6 +49,16 @@ impl State {
         Self::from_connection(Connection::open(url)?)
     }
     pub fn from_connection(db: Connection) -> Result<Self> {
+        let mut state = Self::load_connection(db)?;
+        state.migrate_gameplay()?;
+        Ok(state)
+    }
+    pub fn open_readonly(url: &str) -> Result<Self> {
+        let db = Connection::open(url)?;
+        db.batch("SET default_transaction_read_only=on")?;
+        Self::load_connection(db)
+    }
+    fn load_connection(db: Connection) -> Result<Self> {
         if db.one(
             "SELECT value FROM meta WHERE key='postgres_schema_version'",
             &[],
@@ -160,8 +170,13 @@ impl State {
         Ok(())
     }
     pub fn transaction<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
-        self.db
-            .batch("BEGIN; SELECT pg_advisory_xact_lock(hashtext(current_schema()),666)")?;
+        if let Err(error) = self
+            .db
+            .batch("BEGIN; SELECT pg_advisory_xact_lock(hashtext(current_schema()),666)")
+        {
+            let _ = self.db.batch("ROLLBACK");
+            return Err(error);
+        }
         match f(self) {
             Ok(v) => {
                 self.db.batch("COMMIT")?;

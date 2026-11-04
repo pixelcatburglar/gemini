@@ -106,7 +106,10 @@ impl State {
             "locationid"=>station.or(loc["solarSystemID"].or(self.c("SOLAR_SYSTEM_ID"))),
             "solarsystemid"=>loc["solarSystemID"].or(self.c("SOLAR_SYSTEM_ID")),
             "constellationid"=>loc["constellationID"].or(self.c("CONSTELLATION_ID")),
-            "regionid"=>loc["regionID"].or(self.c("REGION_ID")),"stationItem"=>self.template("station_item")],
+            "regionid"=>loc["regionID"].or(self.c("REGION_ID")),
+            "shipid"=>loc["shipID"].clone(),
+            "locrole"=>if loc["shipID"].is_none(){V::None}else{self.c("FLAG_PILOT")},
+            "stationItem"=>if station.is_none(){V::None}else{self.template("station_item")}],
         )
     }
     pub fn appearance(&self, id: V) -> Result {
@@ -335,7 +338,11 @@ impl State {
         Ok(out)
     }
     pub fn ship_attributes(&self, ship: V, location: V) -> Result {
-        let mut out = d![ship.clone()=>self.data_row("SHIP_ATTRIBUTE_HEADER",vec![ship.clone(),self.ship_item(ship.clone(),location)?,self.data["catalog.SHIP_DOGMA_STATS"].key(&self.ship_type(ship.clone())?).or(d![])])];
+        let mut attributes = self.data["catalog.SHIP_DOGMA_STATS"]
+            .key(&self.ship_type(ship.clone())?)
+            .or(d![]);
+        attributes.set("damage", self.item_damage(ship.clone())?);
+        let mut out = d![ship.clone()=>self.data_row("SHIP_ATTRIBUTE_HEADER",vec![ship.clone(),self.ship_item(ship.clone(),location)?,attributes])];
         for s in self.systems(ship)? {
             out.set(
                 s["itemID"].clone(),

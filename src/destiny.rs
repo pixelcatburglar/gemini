@@ -1,4 +1,11 @@
-use crate::{d, l, pickle::Value as V, state::State, t};
+use crate::{
+    d,
+    game::Client,
+    l,
+    pickle::Value as V,
+    state::{Result, State},
+    t,
+};
 use std::time::{Duration, Instant};
 pub const RAT_ID: i64 = 94000001;
 #[derive(Debug)]
@@ -75,21 +82,47 @@ pub fn rat_objects(s: &State) -> (V, V) {
         slim(s, RAT_ID.into(), true),
     )
 }
-pub fn objects(s: &State, ship: V, rat: Option<&Rat>) -> (Vec<V>, Vec<V>) {
+pub fn player_objects(s: &State, c: &Client) -> Result<(V, V)> {
+    let mut flight = c.flight.clone().ok_or("ship has no flight state")?;
+    flight.update();
+    let item = s.item(c.ship())?;
+    let info = s.type_info(item["typeID"].clone());
+    let name = info["typeName"].clone();
+    let mut ball = ball(
+        c.ship(),
+        flight.position,
+        flight.radius,
+        flight.mass,
+        name.clone(),
+        true,
+    );
+    if let V::Reduce { args, .. } = &mut ball {
+        for (key, value) in [
+            ("vx", flight.velocity[0]),
+            ("vy", flight.velocity[1]),
+            ("vz", flight.velocity[2]),
+            ("maxVelocity", flight.max_speed),
+            ("agility", flight.agility),
+            ("speedFraction", flight.speed),
+        ] {
+            args[0].set(key, value);
+        }
+    }
+    let state = d!["itemID"=>c.ship(),"charID"=>c.char_id(),"ownerID"=>c.char_id(),"groupID"=>info["groupID"].clone(),"categoryID"=>s.category(item["typeID"].clone()),"typeID"=>item["typeID"].clone(),"name"=>name,"graphicID"=>info["graphicID"].clone(),"modules"=>l![],"jumps"=>l![],"orbitID"=>V::None];
+    Ok((
+        ball,
+        V::Instance {
+            module: "foo".into(),
+            name: "SlimItem".into(),
+            args: vec![],
+            state: Box::new(state),
+        },
+    ))
+}
+pub fn objects(s: &State, rat: Option<&Rat>) -> (Vec<V>, Vec<V>) {
     let sky = s.template("sky");
     let mut balls = sky[0].seq().to_vec();
     let mut slims = sky[1].seq().to_vec();
-    if !ship.is_none() {
-        balls.push(ball(
-            ship.clone(),
-            [0., 0., 2500.],
-            30.,
-            1e6,
-            "Your ship".into(),
-            true,
-        ));
-        slims.push(slim(s, ship, false));
-    }
     if rat.is_some_and(Rat::alive) {
         let (b, s) = rat_objects(s);
         balls.push(b);
@@ -97,30 +130,19 @@ pub fn objects(s: &State, ship: V, rat: Option<&Rat>) -> (Vec<V>, Vec<V>) {
     }
     (balls, slims)
 }
-pub fn undock(s: &State, ship: V, rat: Option<&Rat>) -> V {
-    let (balls, slims) = objects(s, ship.clone(), rat);
-    let mut damage = d![];
-    if let Some(r) = rat.filter(|r| r.alive()) {
-        damage.set(RAT_ID, r.damage(s));
-    }
-    l![t![
-        1,
-        t![
-            "SetState",
-            t![V::List(balls), V::List(slims), 1, ship, V::None, damage]
-        ]
-    ]]
-}
 pub fn action(epoch: Instant, name: &str, mut args: Vec<V>) -> V {
-    let stamp = 1 + (epoch.elapsed().as_millis() / 500) as i64;
+    let stamp = stamp(epoch);
     if matches!(name, "FollowBall" | "Orbit") {
         args.push(stamp.into());
     }
     l![t![stamp, t![name, V::Tuple(args)]]]
 }
-pub fn layout(s: &State, ship: V, rat: Option<&Rat>) -> V {
+pub fn stamp(epoch: Instant) -> i64 {
+    1 + (epoch.elapsed().as_millis() / 500) as i64
+}
+pub fn layout(s: &State, rat: Option<&Rat>) -> V {
     let mut out = d![];
-    for b in objects(s, ship, rat).0 {
+    for b in objects(s, rat).0 {
         if let V::Reduce { args, .. } = b {
             let p = &args[0];
             out.set(

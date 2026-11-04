@@ -183,7 +183,7 @@ fn serve(args: &Args, mut state: State) -> std::result::Result<(), String> {
             Err(_) => break,
         }
         if let Err(e) = game.tick() {
-            eprintln!("combat timer: {e:?}");
+            eprintln!("simulation tick: {e:?}");
         }
         let mut closed = vec![];
         for (id, c) in &mut game.clients {
@@ -363,7 +363,12 @@ fn run() -> std::result::Result<(), String> {
         .clone()
         .or_else(|| std::env::var("DATABASE_URL").ok())
         .ok_or("set DATABASE_URL or --database-url to the single PostgreSQL database")?;
-    let mut state = State::open(&url).map_err(|e| format!("{e:?}"))?;
+    let mut state = if args.check_db {
+        State::open_readonly(&url)
+    } else {
+        State::open(&url)
+    }
+    .map_err(|e| format!("{e:?}"))?;
     if args.check_db {
         state.check_database().map_err(|e| format!("{e:?}"))?;
         println!(

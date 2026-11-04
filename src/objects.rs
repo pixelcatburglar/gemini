@@ -24,35 +24,27 @@ impl Game {
         let context = b.context.clone();
         let a = self.state.arguments("object", &kind, method, a, kw)?;
         if method == "DisconnectObject" {
+            if kind == "park" && c.ballpark.as_deref() == Some(id) {
+                if let Some(f) = c.flight.as_mut() {
+                    f.update();
+                    self.state.save_flight(c.session["shipid"].clone(), f)?;
+                }
+                self.space_event(c, "RemoveBall", vec![c.ship(), (-1).into()], true)?;
+                c.ballpark = None;
+                c.targets.clear();
+            }
+            c.objects.remove(id);
             return Ok(V::None);
         }
         match kind.as_str() {
             "inventory" => self.inventory(c, id, method, &context, &a),
             "ship" => {
                 match method {
-                    "Board" => {
-                        if !self.state.hangar_ids(c.char_id())?.contains(&a[0]) {
-                            return Err("no such ship in this character's hangar".into());
-                        }
-                        c.change_session(
-                            d!["shipid"=>a[0].clone(),"locrole"=>self.state.c("FLAG_PILOT")],
-                        )?;
-                    }
-                    "Eject" => c.change_session(d!["shipid"=>V::None,"locrole"=>V::None])?,
-                    "Undock" => {
-                        if c.ship().is_none() {
-                            return Err("you have to board a ship before undocking".into());
-                        }
-                        if c.session["stationid"].is_none() {
-                            return Err("you are not docked".into());
-                        }
-                        c.change_session(d!["stationid"=>V::None,"stationItem"=>V::None,"locationid"=>c.session["solarsystemid"].clone()])?;
-                    }
+                    "Board" => self.board(c, a[0].clone())?,
+                    "Eject" => self.board(c, V::None)?,
+                    "Undock" => self.undock_ship(c)?,
                     "Jettison" => {
-                        return Err(
-                            "Jettison needs a solar system to jettison into; this server has none."
-                                .into(),
-                        );
+                        return Err(user("Cargo jettisoning is not implemented yet."));
                     }
                     _ => {
                         return Err(
@@ -78,6 +70,18 @@ impl Game {
     }
     fn inventory(&mut self, c: &mut Client, id: &str, method: &str, ctx: &V, a: &V) -> Result {
         let s = &mut self.state;
+        if c.char_id().is_none() || !s.owns(c.account.clone(), c.char_id())? {
+            return Err(user("Select your character first."));
+        }
+        if !ctx["owner_id"].is_none() && ctx["owner_id"] != c.char_id() {
+            return Err(user("This inventory belongs to another owner."));
+        }
+        if !ctx["item_id"].is_none()
+            && ctx["item_id"] != c.session["stationid"]
+            && s.item(ctx["item_id"].clone())?["ownerID"] != c.char_id()
+        {
+            return Err(user("This inventory belongs to another owner."));
+        }
         let ship = if ctx["item_id"] == c.session["stationid"] {
             V::None
         } else {
@@ -105,8 +109,8 @@ impl Game {
                 if item.is_none() {
                     return Err("this inventory is a container, not an item".into());
                 }
-                if s.hangar_ids(c.char_id())?.contains(&item) {
-                    return s.ship_item(item, c.session["solarsystemid"].clone());
+                if item == c.ship() || s.hangar_ids(c.char_id())?.contains(&item) {
+                    return s.ship_item(item, c.session["locationid"].clone());
                 }
                 if item == c.session["stationid"] {
                     return Ok(s.template("station_item"));
@@ -142,6 +146,7 @@ impl Game {
                 ))
             }
             "Add" => {
+                s.require_station(c)?;
                 let stored = s.item(a[0].clone())?;
                 if stored.is_none() {
                     return Err(user("There is no such item to move."));
@@ -155,6 +160,17 @@ impl Game {
                     ));
                 }
                 let target = ship.or(c.session["stationid"].clone());
+                if stored["itemID"] == c.ship() {
+                    return Err(user("Eject before moving your active ship."));
+                }
+                if target == stored["itemID"] {
+                    return Err(user("An item cannot contain itself."));
+                }
+                if stored["locationID"] != c.session["stationid"]
+                    && s.item(stored["locationID"].clone())?["ownerID"] != c.char_id()
+                {
+                    return Err(user("That item is not accessible from this station."));
+                }
                 if target.is_none() {
                     return Err(user(
                         "You are not docked -- there is no hangar to put that in.",
@@ -259,18 +275,18 @@ impl Game {
                 Ok(t![attrs, eve_time()])
             }
             "GetTargets" => Ok(V::List(c.targets.iter().map(|id| (*id).into()).collect())),
-            "GetTargeters" => Ok(
-                if c.rat.as_ref().is_some_and(Rat::alive) && !c.targets.is_empty() {
-                    l![RAT_ID]
-                } else {
-                    l![]
-                },
-            ),
+            "GetTargeters" => Ok(if self.rat.alive() && !c.targets.is_empty() {
+                l![RAT_ID]
+            } else {
+                l![]
+            }),
             "AddTarget" => {
-                let rat = c
-                    .rat
-                    .as_ref()
-                    .ok_or("there is nothing to lock -- you are not in space")?;
+                self.state.require_space(c)?;
+                let rat = &self.rat;
+                let position = c.flight.as_ref().ok_or("no flight state")?.position;
+                if crate::space::length(crate::space::sub(position, [6000., 0., 9000.])) > 100000. {
+                    return Err(user("That target is out of locking range."));
+                }
                 if a[0].int() != RAT_ID {
                     return Err(user("The only lockable target is the Pirate Frigate."));
                 }
@@ -286,9 +302,6 @@ impl Game {
             }
             "RemoveTarget" => {
                 if c.targets.remove(&a[0].int()) {
-                    if let Some(r) = &mut c.rat {
-                        r.due = None;
-                    }
                     c.broadcast(
                         "OnTarget",
                         t!["lost", a[0].clone(), "you released the lock"],
@@ -300,9 +313,6 @@ impl Game {
             }
             "ClearTargets" => {
                 let targets = std::mem::take(&mut c.targets);
-                if let Some(r) = &mut c.rat {
-                    r.due = None;
-                }
                 if !targets.is_empty() {
                     c.broadcast("OnTarget", t!["clear"], true)?;
                     for id in targets {
@@ -315,196 +325,339 @@ impl Game {
         }
     }
     pub fn push_state(&self, c: &mut Client, id: &str, defer: bool) -> Result<()> {
+        self.state.require_space(c)?;
+        if c.ballpark.as_deref() != Some(id) {
+            return Err(user("This ballpark is no longer active."));
+        }
+        if let Some(f) = c.flight.as_mut() {
+            f.update();
+        }
         let b = c.objects.get_mut(id).ok_or("ballpark is gone")?;
-        b.epoch = Instant::now();
+        if b.context["ship_id"] != c.session["shipid"] {
+            return Err(user("This ballpark belongs to another ship."));
+        }
         b.state_sent = true;
-        let state = destiny::undock(&self.state, b.context["ship_id"].clone(), c.rat.as_ref());
-        c.broadcast("OnDestinyUpdate", t![state], defer)
+        let epoch = b.epoch;
+        let stamp = destiny::stamp(epoch);
+        let (mut balls, mut slims) = destiny::objects(&self.state, Some(&self.rat));
+        let (ball, slim) = destiny::player_objects(&self.state, c)?;
+        balls.push(ball);
+        slims.push(slim);
+        let mut damage = d![];
+        let hp = self.state.data["catalog.SHIP_DOGMA_STATS"].key(&self.state.ship_type(c.ship())?)
+            ["hp"]
+            .float()
+            .max(1.);
+        damage.set(
+            c.ship(),
+            l![
+                t![1., 1e12],
+                1.,
+                (1. - self.state.item_damage(c.ship())? / hp).clamp(0., 1.)
+            ],
+        );
+        if let Some(r) = Some(&self.rat).filter(|r| r.alive()) {
+            damage.set(RAT_ID, r.damage(&self.state));
+        }
+        for other in self.clients.values().filter(|o| {
+            !o.closed
+                && o.flight.is_some()
+                && o.session["stationid"].is_none()
+                && o.session["solarsystemid"] == c.session["solarsystemid"]
+        }) {
+            let (ball, slim) = destiny::player_objects(&self.state, other)?;
+            balls.push(ball);
+            slims.push(slim);
+        }
+        c.broadcast(
+            "OnDestinyUpdate",
+            t![l![t![
+                stamp,
+                t![
+                    "SetState",
+                    t![
+                        V::List(balls),
+                        V::List(slims),
+                        stamp,
+                        c.ship(),
+                        V::None,
+                        damage
+                    ]
+                ]
+            ]]],
+            defer,
+        )?;
+        let mut replay = vec![];
+        for pilot in std::iter::once(&*c)
+            .chain(self.clients.values())
+            .filter(|o| {
+                o.flight.is_some()
+                    && !o.closed
+                    && o.session["solarsystemid"] == c.session["solarsystemid"]
+                    && o.session["stationid"].is_none()
+            })
+        {
+            let (name, mut args) = pilot.flight.as_ref().unwrap().command();
+            args.insert(0, pilot.ship());
+            replay.push(destiny::action(epoch, name, args));
+        }
+        for packet in replay {
+            c.broadcast("OnDestinyUpdate", t![packet], defer)?;
+        }
+        Ok(())
     }
     fn park(&mut self, c: &mut Client, id: &str, method: &str, a: &V) -> Result {
+        use crate::space::{self, Motion};
+        self.state.require_space(c)?;
+        let b = c.objects.get(id).ok_or("unknown ballpark")?;
+        if c.ballpark.as_deref() != Some(id) || c.ship() != b.context["ship_id"] {
+            return Err(user("This ballpark is no longer active."));
+        }
         if method == "UpdateStateRequest" {
             self.push_state(c, id, true)?;
             return Ok(V::None);
         }
-        let b = c.objects.get(id).ok_or("unknown ballpark")?;
-        let epoch = b.epoch;
-        if !b.state_sent
-            || c.ship().is_none()
-            || !c.session["stationid"].is_none()
-            || c.ship() != b.context["ship_id"]
-        {
-            return Err("you are not flying this ballpark's ship".into());
+        if !b.state_sent {
+            return Err(user("Wait for the ballpark to load."));
         }
-        let mut args = vec![c.ship()];
+        let ship = c.ship();
+        let mut flight = c.flight.clone().ok_or("missing flight state")?;
+        flight.update();
+        if matches!(flight.motion, Motion::Warp(_)) {
+            return Err(user("Wait until the ship leaves warp."));
+        }
+        let mut args = vec![ship.clone()];
         let mut name = method;
-        match method {
-            "GotoDirection" | "GotoPoint" => {
-                let xyz = [a[0].float(), a[1].float(), a[2].float()];
-                if xyz.iter().any(|n| !n.is_finite()) {
-                    return Err(user("Coordinates must be finite."));
-                }
-                if method == "GotoDirection" && xyz == [0., 0., 0.] {
-                    return Err("a direction of (0, 0, 0) is not a direction".into());
-                }
-                args.extend(xyz.map(V::from));
-            }
-            "SetSpeedFraction" => args.push(a[0].or(1.0.into()).float().clamp(0., 1.).into()),
-            "Stop" => (),
-            "FollowBall" | "Orbit" | "WarpToItem" => {
-                if a[0] == c.ship() {
-                    return Err(user("You cannot approach your own ship."));
-                }
-                let target = destiny::layout(&self.state, c.ship(), c.rat.as_ref()).key(&a[0]);
-                if target.is_none() {
-                    return Err(user("There is nothing out there with that ID."));
-                }
-                if method == "WarpToItem" {
-                    name = "WarpTo";
-                    let xyz = [target[0].float(), target[1].float(), target[2].float()];
-                    let radius = target[3].float();
-                    let length = xyz.iter().map(|n| n * n).sum::<f64>().sqrt();
-                    let arrival = if length == 0. {
-                        [0., 0., radius + 15000.]
-                    } else {
-                        xyz.map(|n| n * (length + radius + 15000.) / length)
-                    };
-                    args.extend(arrival.map(V::from));
-                } else {
-                    args.push(a[0].clone());
-                    args.push(a[1].float().into());
-                }
-            }
-            "StargateJump" => {
-                return Err(user(
-                    "This server has no stargates -- there is one solar system and no way out of it.",
-                ));
-            }
-            "Dock" | "TurboDock" => {
-                return Err(user(
-                    "This server cannot dock you again yet. Undocking is a one-way trip; reconnect to start docked.",
-                ));
-            }
-            "GangWarp" | "GangRegroup" => return Err(user("This server has no gangs.")),
-            _ => {
-                return Err(
-                    format!("ballpark.{method} is not implemented by this POC server").into(),
+        let mut layout = destiny::layout(&self.state, Some(&self.rat));
+        for other in self.clients.values().filter(|o| {
+            o.session["solarsystemid"] == c.session["solarsystemid"]
+                && o.session["stationid"].is_none()
+        }) {
+            if let Some(f) = &other.flight {
+                let mut f = f.clone();
+                f.update();
+                layout.set(
+                    other.ship(),
+                    t![f.position[0], f.position[1], f.position[2], f.radius],
                 );
             }
         }
-        c.broadcast(
-            "OnDestinyUpdate",
-            t![destiny::action(epoch, name, args)],
-            true,
-        )?;
+        flight.pending_dock = None;
+        match method {
+            "GotoDirection" | "GotoPoint" => {
+                let xyz = space::coordinates(a)?;
+                if method == "GotoDirection" && space::length(xyz) == 0. {
+                    return Err(user("A direction cannot be zero."));
+                }
+                flight.motion = if method == "GotoDirection" {
+                    Motion::Direction(space::unit(xyz))
+                } else {
+                    Motion::Point(xyz)
+                };
+                args.extend(xyz.map(V::from));
+            }
+            "SetSpeedFraction" => {
+                let fraction = a[0].float();
+                if !matches!(a[0], V::Int(_) | V::Float(_)) || !fraction.is_finite() {
+                    return Err(user("Speed must be finite."));
+                }
+                flight.speed = fraction.clamp(0., 1.);
+                args.push(flight.speed.into());
+            }
+            "Stop" => {
+                flight.motion = Motion::Stopped;
+                flight.speed = 0.;
+            }
+            "FollowBall" | "Orbit" | "WarpToItem" | "Dock" | "TurboDock" => {
+                if a[0] == ship {
+                    return Err(user("Select another object."));
+                }
+                let target = layout.key(&a[0]);
+                if target.is_none() {
+                    return Err(user("That object is not in your solar system."));
+                }
+                let center = [target[0].float(), target[1].float(), target[2].float()];
+                let radius = target[3].float();
+                if matches!(method, "Dock" | "TurboDock") {
+                    if a[0] != self.state.c("STATION_ID") {
+                        return Err(user("That object is not a docking station."));
+                    }
+                    if space::length(space::sub(flight.position, center))
+                        <= radius + flight.radius + self.state.p("maxDockingDistance").float()
+                    {
+                        c.flight = Some(flight);
+                        self.dock_ship(c, a[0].clone())?;
+                        return Ok(V::None);
+                    }
+                    flight.pending_dock = Some(a[0].clone());
+                    flight.motion = Motion::Follow {
+                        target: a[0].clone(),
+                        center,
+                        radius,
+                        distance: 0.,
+                        orbit: false,
+                    };
+                    flight.speed = 1.;
+                    name = "FollowBall";
+                    args.extend([a[0].clone(), 0.0.into()]);
+                } else if method == "WarpToItem" {
+                    if space::length(space::sub(flight.position, center)) - radius - flight.radius
+                        < self.state.p("minWarpDistance").float()
+                    {
+                        return Err(user("The destination is too close to warp to."));
+                    }
+                    let destination =
+                        space::arrival(flight.position, center, radius + flight.radius + 15000.);
+                    flight.motion = Motion::Warp(destination);
+                    name = "WarpTo";
+                    args.extend(destination.map(V::from));
+                } else {
+                    let distance = a[1].float();
+                    if !matches!(a[1], V::Int(_) | V::Float(_))
+                        || !distance.is_finite()
+                        || !(0.0..=1e12).contains(&distance)
+                    {
+                        return Err(user("Distance must be finite and nonnegative."));
+                    }
+                    flight.motion = Motion::Follow {
+                        target: a[0].clone(),
+                        center,
+                        radius,
+                        distance,
+                        orbit: method == "Orbit",
+                    };
+                    args.extend([a[0].clone(), distance.into()]);
+                }
+            }
+            "StargateJump" => return Err(user("Stargate travel is not implemented yet.")),
+            "GangWarp" | "GangRegroup" => return Err(user("You are not in a gang.")),
+            _ => return Err(format!("ballpark.{method} is not implemented").into()),
+        }
+        if matches!(
+            method,
+            "GotoDirection" | "GotoPoint" | "FollowBall" | "Orbit"
+        ) && flight.speed == 0.
+        {
+            flight.speed = 1.;
+        }
+        self.state.save_flight(ship.clone(), &flight)?;
+        let speed = flight.speed;
+        c.flight = Some(flight);
+        if !matches!(method, "SetSpeedFraction" | "WarpToItem") {
+            self.space_event(c, "SetSpeedFraction", vec![ship, speed.into()], true)?;
+        }
+        self.space_event(c, name, args, true)?;
         Ok(V::None)
     }
-    pub fn rat_tick(&self, c: &mut Client, defer: bool) -> Result<()> {
-        // A timer fires once. Only an active attack schedules its successor;
-        // releasing a ballpark must not leave an overdue timer polling forever.
-        if let Some(rat) = &mut c.rat {
-            rat.due = None;
-        }
-        let Some(epoch) = c
-            .ballpark
-            .as_ref()
-            .and_then(|id| c.objects.get(id))
-            .map(|b| b.epoch)
-        else {
-            return Ok(());
-        };
-        let Some(rat) = &mut c.rat else {
-            return Ok(());
-        };
-        if !rat.alive() || !c.targets.contains(&RAT_ID) {
+    pub fn rat_tick(&mut self, c: &mut Client, defer: bool) -> Result<()> {
+        if !self.rat.alive()
+            || c.ballpark.is_none()
+            || !c.session["stationid"].is_none()
+            || !c.targets.contains(&RAT_ID)
+        {
             return Ok(());
         }
-        let killed = rat.hit();
-        let damage = rat.damage(&self.state);
-        c.broadcast(
-            "OnDestinyUpdate",
-            t![destiny::action(
-                epoch,
-                "OnDamageStateChange",
-                vec![RAT_ID.into(), damage]
-            )],
+        let position = c.flight.as_ref().ok_or("no flight state")?.position;
+        if crate::space::length(crate::space::sub(position, [6000., 0., 9000.])) > 100000. {
+            c.targets.remove(&RAT_ID);
+            c.broadcast("OnTarget", t!["lost", RAT_ID, "Target out of range"], defer)?;
+            return Ok(());
+        }
+        let killed = self.rat.hit();
+        self.space_event(
+            c,
+            "OnDamageStateChange",
+            vec![RAT_ID.into(), self.rat.damage(&self.state)],
             defer,
         )?;
         if killed {
-            c.targets.remove(&RAT_ID);
-            c.broadcast(
-                "OnDestinyUpdate",
-                t![destiny::action(
-                    epoch,
-                    "OnSpecialFX",
-                    vec![
-                        RAT_ID.into(),
-                        V::None,
-                        V::None,
-                        V::None,
-                        "effects.Explosion".into(),
-                        0.into(),
-                        1.into(),
-                        0.into(),
-                        (-1).into(),
-                        V::None
-                    ]
-                )],
+            let current = c.id;
+            for pilot in std::iter::once(&mut *c).chain(self.clients.values_mut()) {
+                if pilot.targets.remove(&RAT_ID) {
+                    pilot.broadcast(
+                        "OnTarget",
+                        t!["lost", RAT_ID, "Target destroyed"],
+                        pilot.id == current && defer,
+                    )?;
+                    pilot.broadcast(
+                        "OnTarget",
+                        t!["otherlost", RAT_ID, V::None],
+                        pilot.id == current && defer,
+                    )?;
+                }
+            }
+            self.space_event(
+                c,
+                "OnSpecialFX",
+                vec![
+                    RAT_ID.into(),
+                    V::None,
+                    V::None,
+                    V::None,
+                    "effects.Explosion".into(),
+                    0.into(),
+                    1.into(),
+                    0.into(),
+                    (-1).into(),
+                    V::None,
+                ],
                 defer,
             )?;
-            c.broadcast(
-                "OnDestinyUpdate",
-                t![destiny::action(
-                    epoch,
-                    "RemoveBall",
-                    vec![RAT_ID.into(), (-1).into()]
-                )],
-                defer,
-            )?;
+            self.space_event(c, "RemoveBall", vec![RAT_ID.into(), (-1).into()], defer)?;
         }
         Ok(())
     }
     pub fn tick(&mut self) -> Result<()> {
-        let ids = self
-            .clients
-            .iter()
-            .filter(|(_, c)| {
-                c.rat
-                    .as_ref()
-                    .and_then(|r| r.due)
-                    .is_some_and(|due| due <= Instant::now())
-            })
-            .map(|(id, _)| *id)
-            .collect::<Vec<_>>();
-        for id in ids {
-            let mut c = self.clients.remove(&id).unwrap();
-            let result = (|| -> Result<()> {
-                if c.rat.as_ref().is_some_and(Rat::alive) {
-                    self.rat_tick(&mut c, false)?;
-                } else if let Some(epoch) = c
-                    .ballpark
-                    .as_ref()
-                    .and_then(|id| c.objects.get(id))
-                    .map(|b| b.epoch)
-                {
-                    c.rat = Some(Rat::default());
-                    let (ball, slim) = destiny::rat_objects(&self.state);
-                    let damage = c.rat.as_ref().unwrap().damage(&self.state);
+        self.tick_flights()?;
+        if !self.rat.due.is_some_and(|due| due <= Instant::now()) {
+            return Ok(());
+        }
+        self.rat.due = None;
+        if !self.rat.alive() {
+            self.rat = Rat::default();
+            let (ball, slim) = destiny::rat_objects(&self.state);
+            let damage = self.rat.damage(&self.state);
+            for c in self
+                .clients
+                .values_mut()
+                .filter(|c| !c.closed && c.session["stationid"].is_none())
+            {
+                if let Some(b) = c.ballpark.as_ref().and_then(|id| c.objects.get(id)) {
                     c.broadcast(
                         "OnDestinyUpdate",
                         t![destiny::action(
-                            epoch,
+                            b.epoch,
                             "AddBalls",
-                            vec![t![l![t![ball, slim]], d![RAT_ID=>damage]]]
+                            vec![t![
+                                l![t![ball.clone(), slim.clone()]],
+                                d![RAT_ID=>damage.clone()]
+                            ]]
                         )],
                         false,
                     )?;
-                } else if let Some(r) = &mut c.rat {
-                    r.due = None;
                 }
-                Ok(())
-            })();
-            self.clients.insert(id, c);
-            result?;
+            }
+        } else {
+            let ids: Vec<_> = self
+                .clients
+                .iter()
+                .filter(|(_, c)| {
+                    !c.closed
+                        && c.ballpark.is_some()
+                        && c.targets.contains(&RAT_ID)
+                        && c.session["stationid"].is_none()
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            for id in ids {
+                let mut c = self.clients.remove(&id).unwrap();
+                let result = self.rat_tick(&mut c, false);
+                self.clients.insert(id, c);
+                result?;
+                if !self.rat.alive() {
+                    break;
+                }
+            }
         }
         Ok(())
     }
