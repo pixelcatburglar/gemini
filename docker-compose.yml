@@ -1,0 +1,107 @@
+name: gemini
+services:
+  database:
+    build:
+      context: .
+      target: database
+    environment:
+      POSTGRES_DB: gemini
+      POSTGRES_USER: gemini
+      # Private Compose network; override the local default through the environment.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gemini_local_dev}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/accounts.sql.gz:/docker-entrypoint-initdb.d/001_accounts.sql.gz:ro
+      - ./db/game_agent_types.sql.gz:/docker-entrypoint-initdb.d/002_game_agent_types.sql.gz:ro
+      - ./db/game_ancestries.sql.gz:/docker-entrypoint-initdb.d/003_game_ancestries.sql.gz:ro
+      - ./db/game_attributes.sql.gz:/docker-entrypoint-initdb.d/004_game_attributes.sql.gz:ro
+      - ./db/game_benefits.sql.gz:/docker-entrypoint-initdb.d/005_game_benefits.sql.gz:ro
+      - ./db/game_bloodlines.sql.gz:/docker-entrypoint-initdb.d/006_game_bloodlines.sql.gz:ro
+      - ./db/game_bptypes.sql.gz:/docker-entrypoint-initdb.d/007_game_bptypes.sql.gz:ro
+      - ./db/game_careers.sql.gz:/docker-entrypoint-initdb.d/008_game_careers.sql.gz:ro
+      - ./db/game_categories.sql.gz:/docker-entrypoint-initdb.d/009_game_categories.sql.gz:ro
+      - ./db/game_constants.sql.gz:/docker-entrypoint-initdb.d/010_game_constants.sql.gz:ro
+      - ./db/game_dgmattribs.sql.gz:/docker-entrypoint-initdb.d/011_game_dgmattribs.sql.gz:ro
+      - ./db/game_dgmeffects.sql.gz:/docker-entrypoint-initdb.d/012_game_dgmeffects.sql.gz:ro
+      - ./db/game_dgmtypeattribs.sql.gz:/docker-entrypoint-initdb.d/013_game_dgmtypeattribs.sql.gz:ro
+      - ./db/game_dgmtypeeffects.sql.gz:/docker-entrypoint-initdb.d/014_game_dgmtypeeffects.sql.gz:ro
+      - ./db/game_dogma_values.sql.gz:/docker-entrypoint-initdb.d/015_game_dogma_values.sql.gz:ro
+      - ./db/game_graphics.sql.gz:/docker-entrypoint-initdb.d/016_game_graphics.sql.gz:ro
+      - ./db/game_groups.sql.gz:/docker-entrypoint-initdb.d/017_game_groups.sql.gz:ro
+      - ./db/game_handicaps.sql.gz:/docker-entrypoint-initdb.d/018_game_handicaps.sql.gz:ro
+      - ./db/game_locations.sql.gz:/docker-entrypoint-initdb.d/019_game_locations.sql.gz:ro
+      - ./db/game_market_groups.sql.gz:/docker-entrypoint-initdb.d/020_game_market_groups.sql.gz:ro
+      - ./db/game_market_prices.sql.gz:/docker-entrypoint-initdb.d/021_game_market_prices.sql.gz:ro
+      - ./db/game_messages.sql.gz:/docker-entrypoint-initdb.d/022_game_messages.sql.gz:ro
+      - ./db/game_owners.sql.gz:/docker-entrypoint-initdb.d/023_game_owners.sql.gz:ro
+      - ./db/game_races.sql.gz:/docker-entrypoint-initdb.d/024_game_races.sql.gz:ro
+      - ./db/game_roles.sql.gz:/docker-entrypoint-initdb.d/025_game_roles.sql.gz:ro
+      - ./db/game_rpc_methods.sql.gz:/docker-entrypoint-initdb.d/026_game_rpc_methods.sql.gz:ro
+      - ./db/game_scene.sql.gz:/docker-entrypoint-initdb.d/027_game_scene.sql.gz:ro
+      - ./db/game_school_degrees.sql.gz:/docker-entrypoint-initdb.d/028_game_school_degrees.sql.gz:ro
+      - ./db/game_school_types.sql.gz:/docker-entrypoint-initdb.d/029_game_school_types.sql.gz:ro
+      - ./db/game_schools.sql.gz:/docker-entrypoint-initdb.d/030_game_schools.sql.gz:ro
+      - ./db/game_shiptypes.sql.gz:/docker-entrypoint-initdb.d/031_game_shiptypes.sql.gz:ro
+      - ./db/game_types.sql.gz:/docker-entrypoint-initdb.d/032_game_types.sql.gz:ro
+      - ./db/game_units.sql.gz:/docker-entrypoint-initdb.d/033_game_units.sql.gz:ro
+      - ./db/inventory.sql.gz:/docker-entrypoint-initdb.d/034_inventory.sql.gz:ro
+      - ./db/jumps.sql.gz:/docker-entrypoint-initdb.d/035_jumps.sql.gz:ro
+      - ./db/market_orders.sql.gz:/docker-entrypoint-initdb.d/036_market_orders.sql.gz:ro
+      - ./db/market_price_history.sql.gz:/docker-entrypoint-initdb.d/037_market_price_history.sql.gz:ro
+      - ./db/market_transactions.sql.gz:/docker-entrypoint-initdb.d/038_market_transactions.sql.gz:ro
+      - ./db/meta.sql.gz:/docker-entrypoint-initdb.d/039_meta.sql.gz:ro
+      - ./db/reference_documents.sql.gz:/docker-entrypoint-initdb.d/040_reference_documents.sql.gz:ro
+      - ./db/reference_tables.sql.gz:/docker-entrypoint-initdb.d/041_reference_tables.sql.gz:ro
+      - ./db/regions.sql.gz:/docker-entrypoint-initdb.d/042_regions.sql.gz:ro
+      - ./db/seed_character_location.sql.gz:/docker-entrypoint-initdb.d/043_seed_character_location.sql.gz:ro
+      - ./db/seed_characters.sql.gz:/docker-entrypoint-initdb.d/044_seed_characters.sql.gz:ro
+      - ./db/seed_inventory.sql.gz:/docker-entrypoint-initdb.d/045_seed_inventory.sql.gz:ro
+      - ./db/seed_skills.sql.gz:/docker-entrypoint-initdb.d/046_seed_skills.sql.gz:ro
+      - ./db/seed_wallet.sql.gz:/docker-entrypoint-initdb.d/047_seed_wallet.sql.gz:ro
+      - ./db/skills.sql.gz:/docker-entrypoint-initdb.d/048_skills.sql.gz:ro
+      - ./db/wallet.sql.gz:/docker-entrypoint-initdb.d/049_wallet.sql.gz:ro
+      - ./db/characters.sql.gz:/docker-entrypoint-initdb.d/050_characters.sql.gz:ro
+      - ./db/constellations.sql.gz:/docker-entrypoint-initdb.d/051_constellations.sql.gz:ro
+      - ./db/character_appearance.sql.gz:/docker-entrypoint-initdb.d/052_character_appearance.sql.gz:ro
+      - ./db/character_location.sql.gz:/docker-entrypoint-initdb.d/053_character_location.sql.gz:ro
+      - ./db/solar_systems.sql.gz:/docker-entrypoint-initdb.d/054_solar_systems.sql.gz:ro
+      - ./db/system_contents.sql.gz:/docker-entrypoint-initdb.d/055_system_contents.sql.gz:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U gemini -d gemini"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  server:
+    build:
+      context: .
+      target: server
+    environment:
+      DATABASE_URL: postgresql://gemini:${POSTGRES_PASSWORD:-gemini_local_dev}@database:5432/gemini
+    depends_on:
+      database:
+        condition: service_healthy
+    ports:
+      - "${GAME_BIND_ADDRESS:-0.0.0.0}:${GAME_PORT:-26000}:26000/tcp"
+    init: true
+    restart: unless-stopped
+
+  tests:
+    profiles: [test]
+    build:
+      context: .
+      target: test
+    environment:
+      TEST_DATABASE_URL: postgresql://gemini:${POSTGRES_PASSWORD:-gemini_local_dev}@database:5432/gemini
+    volumes:
+      - ./db:/app/db:ro
+    depends_on:
+      database:
+        condition: service_healthy
+    init: true
+
+volumes:
+  postgres_data:
